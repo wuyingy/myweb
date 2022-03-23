@@ -4,6 +4,7 @@
 #include "sys/mman.h"
 #include "sys/stat.h"
 #include <unistd.h>
+#include "stdarg.h"
 #include "http_web.h"
 
 using namespace std;
@@ -11,6 +12,17 @@ using namespace std;
 int http_conn:: users_count=0;
 int http_conn:: m_epollfd=-1;
 static const char* root_dir="/home/wujinyou";
+
+const char* ok_200_title="OK";
+const char* error_400_title="Bad Request";
+const char* error_400_form="Your request has bad syntax or is inherently impossible to satisfy.\n";
+const char* error_403_title="Forbidden";
+const char* error_403_form="You do not have permission to get this file from this server.\n";
+const char* error_404_title="Not Found";
+const char* error_404_form="The requested file was not found on this server.\n";
+const char* error_500_title="Internal Error";
+const char* error_500_form="There was an unusual problem serving the requestted file.\n";
+const char* file_blank="<html><body></body></html>";
 
 int setNonblocking(int fd)
 {
@@ -77,6 +89,7 @@ void http_conn::init(int fd,const struct sockaddr_in& cliaddr)
 void http_conn::init()
 {
 	m_read_idx=0;
+	m_write_idx=0;
 	line_parse_state=PARSE_REQUESTLINE;
 	start_line_idx=0;
 	http_content_len=0;
@@ -314,9 +327,139 @@ http_conn::HTTP_RESULT http_conn::process_read()
 //write part
 bool http_conn::http_conn::write()
 {
+	return true;
+}
+bool http_conn::add_content_len(int len)
+{
+	return add_respone_line("Content_Length: %d\r\n",len);
+}
+bool http_conn::add_longer()
+{
+	return add_respone_line("Connection: %s\r\n",(m_longer==true)? "Keep-alive":"close");
+}
+bool http_conn::add_blankLine()
+{
+	return add_respone_line("%s","\r\n");
+}
+bool http_conn::add_respone_line(const char* format,...)
+{
+	if(m_write_idx>=WRITE_BUFFER_SIZE)
+		return false;
+
+	va_list ap;
+	va_start(ap,format);
+	int len=vsnprintf(write_array+m_write_idx,WRITE_BUFFER_SIZE-m_write_idx-1,format,ap);
+	if(len>(WRITE_BUFFER_SIZE-m_write_idx-1))
+	{
+		return false;
+	}
+
+	m_write_idx+=len;
+	va_end(ap);
+
+	return true;
+}
+bool http_conn::add_status_line(int status,const char* c_phrase)
+{
+	return add_respone_line("%s %d %s\r\n","HTTP/1.1",status,c_phrase);
+}
+bool http_conn::add_header(int content)
+{
+	bool ret;
+	ret=add_content_len(content);
+	if(ret==false)
+		return ret;
+	ret=add_longer();
+	if(ret==false)
+		return ret;
+	ret=add_blankLine();
+	if(ret==false)
+		return ret;
+	return true;
+}
+bool http_conn::add_content(const char* content)
+{
+	bool ret=add_respone_line("%s",content);
+	return ret;
 }
 bool http_conn::process_write(HTTP_RESULT ret)
 {
+	bool add_ret;
+	switch(ret)
+	{
+                // BAD_REQUEST,//请求数据有语法错误
+		case BAD_REQUEST:
+		{
+			add_ret=add_status_line(400,error_400_title);
+			if(!add_ret) return add_ret;
+			add_ret=add_header(strlen(error_400_form));
+			if(!add_ret) return add_ret;
+			add_ret=add_content(error_400_form);
+			if(!add_ret) return add_ret;
+			break;
+		}
+	        // FORBIDDEN_REQUEST,//客户对资源没有足够的访问权限
+		case FORBIDDEN_REQUEST:
+		{
+			add_ret=add_status_line(403,error_403_title);
+			if(!add_ret) return add_ret;
+			add_ret=add_header(strlen(error_403_form));
+			if(!add_ret) return add_ret;
+			add_ret=add_content(error_403_form);
+			if(!add_ret) return add_ret;
+			break;
+		}
+	        // INTERNAL_ERROR,//服务器内部错误
+		case INTERNAL_ERROR:
+		{
+			add_ret=add_status_line(500,error_500_title);
+			if(!add_ret) return add_ret;
+			add_ret=add_header(strlen(error_500_form));
+			if(!add_ret) return add_ret;
+			add_ret=add_content(error_500_form);
+			if(!add_ret) return add_ret;
+			break;
+		}
+	        // NO_RESOURCE,//文件不在本服务器
+		case NO_RESOURCE:
+		{
+			add_ret=add_status_line(404,error_404_title);
+			if(!add_ret) return add_ret;
+			add_ret=add_header(strlen(error_404_form));
+			if(!add_ret) return add_ret;
+			add_ret=add_content(error_404_form);
+			if(!add_ret) return add_ret;
+			break;
+		}
+	        // DO_REQUEST_SUCCESS //HTTP解析成功，接下来进行写操作
+		case DO_REQUEST_SUCCESS:
+		{
+			add_ret=add_status_line(200,ok_200_title);
+			if(m_file_stat.st_size>0)
+			{
+				add_ret=add_header(m_file_stat.st_size);
+				m_iov[0].iov_base=write_array;
+				m_iov[0].iov_len=m_write_idx;
+				m_iov[1].iov_base=m_file_add;
+				m_iov[1].iov_len=m_file_stat.st_size;
+				iov_count=2;
+				return add_ret;
+			}
+			else
+			{
+				add_ret=add_header(strlen(file_blank));
+			        if(!add_ret) return add_ret;
+				add_ret=add_content(file_blank);
+			        if(!add_ret) return add_ret;
+			}
+		}
+		default: return false;
+	}
+
+	m_iov[0].iov_base=write_array;
+	m_iov[0].iov_len=m_write_idx;
+	iov_count=1;
+	return add_ret;
 }
 
 void http_conn::process()

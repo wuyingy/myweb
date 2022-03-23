@@ -24,15 +24,20 @@ class http_conn
 		int m_sockfd;
 		struct sockaddr_in m_address;
 		int http_content_len;
+		static const int WRITE_BUFFE_SIZE=1024;
 		char* m_host;
 		//whether need to keep connection
 		bool m_longer;
+		struct iovec m_iov[2];
+		int iov_count;
+
 	public:
 		static int users_count;
 		static int m_epollfd;
 		static const int READ_BUFFER_SIZE=2048;
 		static const int WRITE_BUFFER_SIZE=1024;
 		int m_read_idx;
+		int m_write_idx;
 		int once_read;
 		char read_array[2048];
 		char write_array[1024];
@@ -100,6 +105,14 @@ class http_conn
 		void unmap();
 		HTTP_RESULT do_request();
 		HTTP_RESULT process_read();
+
+		bool add_respone_line(const char* format,...);
+		bool add_status_line(int status,const char* c_phrase);
+		bool add_header(int content_len);
+		bool add_content_len(int content);
+		bool add_longer();
+		bool add_blankLine();
+		bool add_content(const char* content);
 		bool process_write(HTTP_RESULT ret);
 };
 
