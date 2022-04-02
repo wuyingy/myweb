@@ -5,7 +5,7 @@
 #include <netinet/in.h>
 #include <strings.h>
 #include <string.h>
-
+#include "signal.h"
 #include "threadpool.h"
 #include "http_web.h"
 using namespace std;
@@ -15,6 +15,16 @@ using namespace THREADPOOL;
 #define SA struct sockaddr
 #define MAX_EVENT_NUMBER 10000
 
+void addsig(int sig,void(handler)(int))
+{
+	struct sigaction sa;
+	bzero(&sa,sizeof(sa));
+
+	sa.sa_handler=handler;
+	sa.sa_flags|=SA_RESTART;//restarting don`t to worry process blocked 
+	sigfillset(&sa.sa_mask);
+	assert(sigaction(sig,&sa,NULL)!=-1);
+}
 extern bool  addfd(int epollfd,int fd,bool judge);
 void show_error(int fd,const char* info)
 {
@@ -24,7 +34,7 @@ void show_error(int fd,const char* info)
 }
 int main(int argc,char** argv)
 {
-	if(argc<3)
+	if(argc<2)
 	{
 		perror("The arguments are less,try again");
 		return 0;
@@ -44,13 +54,15 @@ int main(int argc,char** argv)
 	}
 
 	//create connection
+	addsig(SIGPIPE,SIG_IGN);
+
 	int listenfd;
 	struct sockaddr_in servaddr;
 	listenfd=socket(AF_INET,SOCK_STREAM,0);
 
 	bzero(&servaddr,sizeof(servaddr));
 	servaddr.sin_family=AF_INET;
-	servaddr.sin_port=htons(atoi(argv[2]));
+	servaddr.sin_port=htons(atoi(argv[1]));
 	servaddr.sin_addr.s_addr=htonl(INADDR_ANY);
 	int retb=bind(listenfd,(SA*)&servaddr,sizeof(servaddr));
 	assert(retb==0);
@@ -80,9 +92,10 @@ int main(int argc,char** argv)
 			printf("Epoll_wait failure\n");
 			break;
 		}
+		//cout<<number<<endl;
 		for(int i=0;i<number;i++)
 		{
-			int sockfd=events[i].data.fd;
+			int sockfd=events[i].data.fd;//fetch socket from readying events to user array
 			if(sockfd==listenfd)
 			{
 				int connfd;
@@ -100,11 +113,13 @@ int main(int argc,char** argv)
 					show_error(connfd,"Internal is buzy.");
 					continue;
 				}
-				users[connfd].init(connfd,cliaddr);
+				users[connfd].init(connfd,cliaddr);//the socket just used for the index of users
+				//cout<<"Connect success."<<endl;
 			}
 			else if(events[i].events&EPOLLIN)
 			{
-				if(users[i].read())
+				//cout<<"read----"<<endl;
+				if(users[sockfd].read())
 				{
 					pool->append(users+sockfd);//如果数据读取成功，启动线程
 				}

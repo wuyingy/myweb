@@ -1,10 +1,12 @@
 #include "iostream"
+#include "stdio.h"
 #include "cstring"
 #include "string.h"
 #include "sys/mman.h"
 #include "sys/stat.h"
 #include <unistd.h>
 #include "stdarg.h"
+#include "sys/uio.h"
 #include "http_web.h"
 
 using namespace std;
@@ -93,6 +95,7 @@ void http_conn::init()
 	line_parse_state=PARSE_REQUESTLINE;
 	start_line_idx=0;
 	http_content_len=0;
+	now_array_idx=0;
 	m_host=NULL;
 	m_longer=false;
 	m_methed=GET;
@@ -106,22 +109,25 @@ void http_conn::init()
 //read part
 bool http_conn:: read()
 {
+	//cout<<"come to read"<<endl;
 	if(m_read_idx>=READ_BUFFER_SIZE)
 		return false;
 	int once_read=0;
 	//oneshot---while
 	while(1)
 	{
+		//cout<<"recv---"<<endl;
 		once_read=recv(m_sockfd,read_array+m_read_idx,READ_BUFFER_SIZE-m_read_idx,0);
+		fputs(read_array+m_read_idx,stdout);
 		if(once_read<0)
 		{
+		        //cout<<"errno="<<errno<<endl;
 			if(errno==EAGAIN||errno==EWOULDBLOCK)
 				break;//后期处理时没有读取到数据，进行再次注册再读取
 			return false;
 		}
 		else if(once_read==0)
 			return false;
-		printf("Get 1 http request:\n%s\n",&read_array[m_read_idx]);
 		m_read_idx+=once_read;
 	}
 	return true;
@@ -148,7 +154,7 @@ http_conn::LINE_STATE http_conn::read_line()
 			}
 			else return LINE_BAD;
 		}
-		else if(temp='\n')
+		else if(temp=='\n')
 		{
 			if(read_array[now_array_idx-1]=='\r')
 			{
@@ -327,7 +333,48 @@ http_conn::HTTP_RESULT http_conn::process_read()
 //write part
 bool http_conn::http_conn::write()
 {
-	return true;
+	int temp=0;
+	int bytes_have_send=0;
+	int bytes_to_send=m_write_idx;
+	if(bytes_to_send==0)
+	{
+		modfd(m_epollfd,m_sockfd,EPOLLIN);
+		init();
+		return true;
+	}
+
+	while(1)
+	{
+		temp=writev(m_sockfd,m_iov,iov_count);
+		if(temp<0)
+		{
+			if(errno==EAGAIN)
+			{
+				modfd(m_epollfd,m_sockfd,EPOLLOUT);
+				return true;
+			}
+			unmap();
+			return false;
+		}
+
+		bytes_to_send-=temp;
+		bytes_have_send+=temp;
+		if(bytes_to_send<=bytes_have_send)
+		{
+			unmap();
+			if(m_longer)
+			{
+				init();
+				modfd(m_epollfd,m_sockfd,EPOLLOUT);
+				return true;
+			}
+			else
+			{
+				modfd(m_epollfd,m_sockfd,EPOLLOUT);
+				return false;
+			}
+		}
+	}
 }
 bool http_conn::add_content_len(int len)
 {
